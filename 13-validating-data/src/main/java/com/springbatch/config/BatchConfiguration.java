@@ -1,0 +1,98 @@
+package com.springbatch.config;
+
+import javax.sql.DataSource;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
+import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
+import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
+import org.springframework.batch.item.ItemReader;
+import org.springframework.batch.item.database.BeanPropertyItemSqlParameterSourceProvider;
+import org.springframework.batch.item.database.JdbcBatchItemWriter;
+import org.springframework.batch.item.database.JdbcCursorItemReader;
+import org.springframework.batch.item.database.JdbcPagingItemReader;
+import org.springframework.batch.item.database.support.SqlPagingQueryProviderFactoryBean;
+import org.springframework.batch.item.validator.ValidatingItemProcessor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import com.springbatch.domain.Product;
+import com.springbatch.domain.ProductRowMapper;
+import com.springbatch.domain.ProductValidator;
+
+@Configuration
+@EnableBatchProcessing
+public class BatchConfiguration {
+	
+	@Autowired
+	public JobBuilderFactory jobBuilderFactory;
+	
+	@Autowired
+	public StepBuilderFactory stepBuilderFactory;
+	
+	@Autowired
+	public DataSource dataSource;
+	
+	
+	@Bean
+	public ItemReader<Product> jdbcCursorItemReader() {
+		JdbcCursorItemReader<Product> itemReader = new JdbcCursorItemReader<>();
+		itemReader.setDataSource(dataSource);
+		itemReader.setSql("select * from product_details order by product_id");
+		itemReader.setRowMapper(new ProductRowMapper());
+		return itemReader;
+	}
+	
+	@Bean
+	public ItemReader<Product> jdbcPagingItemReader() throws Exception {
+		JdbcPagingItemReader<Product> itemReader = new JdbcPagingItemReader<>();
+		itemReader.setDataSource(dataSource);
+		
+		SqlPagingQueryProviderFactoryBean factory = new SqlPagingQueryProviderFactoryBean();
+		factory.setDataSource(dataSource);
+		factory.setSelectClause("select product_id, product_name, product_category, product_price");
+		factory.setFromClause("from product_details");
+		factory.setSortKey("product_id");
+		
+		itemReader.setQueryProvider(factory.getObject());
+		itemReader.setRowMapper(new ProductRowMapper());
+		itemReader.setPageSize(3);
+		
+		return itemReader;
+	}
+	
+	@Bean
+	public JdbcBatchItemWriter<Product> jdbcBatchItemWriter() {
+		JdbcBatchItemWriter<Product> itemWriter = new JdbcBatchItemWriter<>();
+		itemWriter.setDataSource(dataSource);
+		itemWriter.setSql("insert into product_details_output values (:productId, :productName, :productCategory, :productPrice)");
+		itemWriter.setItemSqlParameterSourceProvider(new BeanPropertyItemSqlParameterSourceProvider<Product>());
+		return itemWriter;
+	}
+	
+	@Bean
+	public ValidatingItemProcessor<Product> validateProductItemProcessor() {
+		ValidatingItemProcessor<Product> validatingItemProcessor = new ValidatingItemProcessor<>(new ProductValidator());
+		validatingItemProcessor.setFilter(true);
+		return validatingItemProcessor;
+	}
+	
+	@Bean
+	public Step step1() throws Exception {
+		return this.stepBuilderFactory.get("chunkBasedStep1")
+				.<Product,Product>chunk(3)
+				.reader(jdbcPagingItemReader())
+				.processor(validateProductItemProcessor())
+				.writer(jdbcBatchItemWriter())
+				.build();
+	}
+	
+	@Bean
+	public Job firstJob() throws Exception {
+		return this.jobBuilderFactory.get("job1")
+				.start(step1())
+				.build();
+	}
+}
